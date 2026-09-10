@@ -1,0 +1,22 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Bot runtime outputs & checkpoints (sedang ditulis realtime oleh bot)
+output/
+checkpoint*.json
+*.log
+
+# Data folder (opsional: abaikan jika data survey bersifat rahasia/internal BPS)
+# data/
+
+# Temporary / Scratch files
+*.tmp
+inspect_*.py
+test_click_radio.py
