@@ -20,3 +20,6 @@ checkpoint*.json
 *.tmp
 inspect_*.py
 test_click_radio.py
+
+# Data folder
+data/

@@ -45,11 +45,11 @@ from selenium.common.exceptions import (
 
 # ---------------- CONFIG ----------------
 DEBUGGER_ADDRESS = "127.0.0.1:9222"
-DEFAULT_EXCEL_PATH = os.path.abspath("data/110-rozi.xlsx")
+DEFAULT_EXCEL_PATH = os.path.abspath("data/030-purwoharjo-fix.xlsx")
 OUTPUT_DIR = os.path.abspath("output")
 ERROR_DIR = os.path.join(OUTPUT_DIR, "errors")
-CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint_110_fix_rozi.json")
-RESULT_EXCEL = os.path.join(OUTPUT_DIR, "110-fix-rozi_hasil.xlsx")
+CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "checkpoint_030_purwoharjo.json")
+RESULT_EXCEL = os.path.join(OUTPUT_DIR, "030-purwoharjo_hasil.xlsx")
 
 # User-provided XPaths
 XPATH_BUTTON_EDIT = '//*[@id="fasih"]/div/div/div[2]/div/div/div/button[5]'
@@ -68,6 +68,12 @@ XPATH_DIALOG_CONFIRM = '//*[@id="dialog-cl-8-content"]/div/div[3]/button[2]'
 # Error Page / Rate Limit XPaths
 XPATH_BTN_HOME = '//*[@id="app"]/div/div/div[2]/div/button[1]'
 XPATH_BTN_REFRESH = '//*[@id="app"]/div/div/div[2]/div/button[2]'
+
+
+class AssignmentSkipException(Exception):
+    """Exception khusus untuk assignment yang harus dilewati (skip) tanpa dianggap error.
+    Contoh: status Reject, dokumen terkunci/selesai, tombol edit tidak ada, atau titik tiga tidak tersedia."""
+    pass
 
 
 def print_banner(text: str, char: str = "="):
@@ -512,12 +518,15 @@ def click_edit_mode(driver, target_url="", timeout=20):
         except Exception:
             pass
 
-    # Tunggu indikator mode edit muncul (maks 15 detik)
+    # Tunggu indikator mode edit muncul (maks 10 detik)
     time.sleep(2)
-    WebDriverWait(driver, 15).until(
-        lambda d: "/edit" in d.current_url or len(d.find_elements(By.XPATH, "//*[contains(text(), 'MODE EDIT')]")) > 0
-    )
-    print("  -> Berhasil masuk MODE EDIT")
+    try:
+        WebDriverWait(driver, 10).until(
+            lambda d: "/edit" in d.current_url or len(d.find_elements(By.XPATH, "//*[contains(text(), 'MODE EDIT')]")) > 0
+        )
+        print("  -> Berhasil masuk MODE EDIT")
+    except TimeoutException:
+        raise AssignmentSkipException("Tombol Edit tidak tersedia / tidak bisa masuk Mode Edit (Status Reject / Dokumen Terkunci)")
 
 
 
@@ -613,9 +622,12 @@ def go_to_blok_p(driver):
             continue
 
     # Tunggu halaman Blok P terbuka
-    WebDriverWait(driver, 15).until(
-        lambda d: len(d.find_elements(By.XPATH, "//*[contains(text(), 'Keberadaan Bangunan') or contains(text(), 'KETERANGAN KELUARGA')]")) > 0
-    )
+    try:
+        WebDriverWait(driver, 12).until(
+            lambda d: len(d.find_elements(By.XPATH, "//*[contains(text(), 'Keberadaan Bangunan') or contains(text(), 'KETERANGAN KELUARGA')]")) > 0
+        )
+    except TimeoutException:
+        raise AssignmentSkipException("Halaman Blok P tidak dapat dimuat (Status Dokumen Reject / Terkunci)")
     time.sleep(0.8)
 
 
@@ -710,17 +722,26 @@ def click_kirim(driver, url=""):
         "//header//button[contains(., 'Kirim')] | "
         "//*[@id='fasih']//button[contains(., 'Kirim') and not(ancestor::*[contains(@role, 'dialog')])]"
     )
+    clicked_kirim = False
     try:
-        wait_and_click(driver, By.XPATH, xpath_kirim_header, timeout=8, desc="Tombol Kirim Header")
+        wait_and_click(driver, By.XPATH, xpath_kirim_header, timeout=6, desc="Tombol Kirim Header")
+        clicked_kirim = True
     except Exception:
         # Fallback tombol Kirim apa saja yang terlihat
-        wait_and_click(driver, By.XPATH, "//button[contains(., 'Kirim') and not(@disabled)]", timeout=8, desc="Fallback Kirim")
+        try:
+            wait_and_click(driver, By.XPATH, "//button[contains(., 'Kirim') and not(@disabled)]", timeout=5, desc="Fallback Kirim")
+            clicked_kirim = True
+        except Exception:
+            raise AssignmentSkipException("Tombol 'Kirim' tidak ditemukan atau dinonaktifkan (Status Dokumen Reject / Terkunci / Selesai)")
 
     # Tunggu modal Kirim muncul (validasi selesai dihitung Fasih)
     print("  -> Menunggu modal 'Kirim' muncul...")
-    WebDriverWait(driver, 12).until(
-        lambda d: len(d.find_elements(By.XPATH, "//*[contains(text(), '25 Jawaban') or contains(text(), 'GALAT') or contains(text(), 'KOSONG') or @role='dialog']")) > 0
-    )
+    try:
+        WebDriverWait(driver, 12).until(
+            lambda d: len(d.find_elements(By.XPATH, "//*[contains(text(), '25 Jawaban') or contains(text(), 'GALAT') or contains(text(), 'KOSONG') or @role='dialog']")) > 0
+        )
+    except TimeoutException:
+        raise AssignmentSkipException("Modal 'Kirim' tidak muncul setelah tombol Kirim diklik")
 
     # Klik tombol trigger titik tiga (...)
     print("  -> Mengklik titik tiga (...) untuk opsi submit paksa...")
@@ -744,10 +765,7 @@ def click_kirim(driver, url=""):
             continue
 
     if not clicked_trigger:
-        print("  -> Peringatan: Gagal klik trigger titik tiga, mencoba langsung klik 'Kirim' di modal...")
-        wait_and_click(driver, By.XPATH, "//*[@role='dialog']//button[contains(., 'Kirim')]", timeout=4, desc="Kirim Modal")
-        time.sleep(2)
-        return
+        raise AssignmentSkipException("Opsi titik tiga (...) tidak tersedia pada modal Kirim (Status Dokumen Reject / Tidak Ada Hak Submit Paksa)")
 
     # Klik opsi "Submit Paksa" dari dropdown
     print("  -> Memilih menu 'Submit Paksa'...")
@@ -796,6 +814,9 @@ def click_kirim(driver, url=""):
                     break
         except Exception:
             pass
+
+    if not clicked_paksa:
+        raise AssignmentSkipException("Pilihan 'Submit Paksa' tidak tersedia di menu titik tiga (Status Dokumen Reject / Terkunci)")
 
     # Menunggu dan mengklik dialog konfirmasi pengiriman akhir (button konfirmasi)
     print("  -> Menunggu dialog konfirmasi akhir muncul...")
@@ -1005,6 +1026,7 @@ def main():
 
     processed_count = 0
     success_count = 0
+    skipped_count = 0
     failed_count = 0
 
     try:
@@ -1063,6 +1085,38 @@ def main():
                 print(f"  -> Jeda santai {cooldown_between:.1f} detik sebelum data berikutnya...")
                 time.sleep(cooldown_between)
 
+            except AssignmentSkipException as e:
+                skipped_count += 1
+                skip_reason = str(e)
+                print_banner(
+                    f"[SKIP REJECT / TERKUNCI] Baris {idx+1}/{total_rows}\n"
+                    f"Alasan: {skip_reason}",
+                    char="~"
+                )
+
+                # Jika ada screenshot error lama pada baris ini, hapus karena sekarang resmi di-skip
+                err_img = os.path.join(ERROR_DIR, f"error_row_{idx+1}.png")
+                if os.path.exists(err_img):
+                    try:
+                        os.remove(err_img)
+                        print(f"  -> Screenshot error lama pada baris {idx+1} telah dibersihkan.")
+                    except Exception:
+                        pass
+
+                # Catat status skip di Excel
+                df.at[idx, "status_bot"] = f"SKIP: {skip_reason}"
+                df.at[idx, "waktu_eksekusi"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                # Masukkan ke completed_urls agar tersimpan di checkpoint dan tidak diulang-ulang
+                completed_urls.add(url)
+                save_checkpoint(list(completed_urls), int(idx))
+
+                # Simpan excel hasil
+                if args.retry_failed or processed_count % 5 == 0 or processed_count == max_rows:
+                    df.to_excel(RESULT_EXCEL, index=False)
+
+                time.sleep(2)
+
             except Exception as e:
                 failed_count += 1
                 error_msg = str(e)
@@ -1091,11 +1145,12 @@ def main():
         df.to_excel(RESULT_EXCEL, index=False)
         print_banner(
             f"RINGKASAN EKSEKUSI:\n"
-            f"- Diproses: {processed_count}\n"
-            f"- Sukses  : {success_count}\n"
-            f"- Gagal   : {failed_count}\n"
-            f"- Total Selesai (Semua): {len(completed_urls)}/{total_rows}\n"
-            f"- Hasil Excel: {RESULT_EXCEL}",
+            f"- Diproses              : {processed_count}\n"
+            f"- Sukses (Diperbaiki)   : {success_count}\n"
+            f"- Dilewati (Skip/Reject): {skipped_count}\n"
+            f"- Gagal (Error)         : {failed_count}\n"
+            f"- Total Selesai (Semua) : {len(completed_urls)}/{total_rows}\n"
+            f"- Hasil Excel           : {RESULT_EXCEL}",
             char="#",
         )
 
