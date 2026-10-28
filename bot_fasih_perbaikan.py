@@ -3,7 +3,7 @@ Bot Otomasi Perbaikan Data Sensus Ekonomi 2026 (fasih-sm.bps.go.id)
 Berdasarkan referensi arsitektur fasih-sql-test.py (Remote Debugging Chrome)
 
 Alur per Assignment:
-1. Akses URL dari kolom assignment_id_usaha_bku di perbaikan-data-kabat.xlsx
+1. Akses URL dari kolom assignment_id_keluarga_usaha_ditautkan di Excel data
 2. Klik tombol Edit (//*[@id="fasih"]/div/div/div[2]/div/div/div/button[5]) hingga masuk MODE EDIT
 3. Klik menu "SE2026 - P KETERANGAN KELUARGA DAN BANGUNAN"
 4. Ubah "Keberadaan Bangunan Lainnya/ Usaha" -> pilih "1. Ditemukan"
@@ -33,6 +33,7 @@ import pandas as pd
 from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -64,6 +65,9 @@ XPATH_BLOK_L_DITEMUKAN = '//*[@id="radiogroup-cl-15-item-cl-18"]'
 XPATH_SUBMIT_DOTS = '//*[@id="dropdownmenu-cl-49-trigger"]/button'
 XPATH_SUBMIT_PAKSA = '//*[@id="dropdownmenu-cl-49-content-cl-52"]'
 XPATH_DIALOG_CONFIRM = '//*[@id="dialog-cl-8-content"]/div/div[3]/button[2]'
+XPATH_ADD_CATATAN = '//*[@id="fasih-form"]/div/div[1]/aside/div[2]/div[9]/div[1]'
+XAPTH_INPUTAN_CATATAN = '//*[@id="textfield-cl-12-textarea"]'
+XPATH_CHECK_ANOMALI = '//*[@id="switch-cl-422-control"]'
 
 # Error Page / Rate Limit XPaths
 XPATH_BTN_HOME = '//*[@id="app"]/div/div/div[2]/div/button[1]'
@@ -699,6 +703,213 @@ def set_keberadaan_usaha_ditemukan(driver):
     select_radio_ditemukan_verified(driver, "Blok L II (Keberadaan Usaha)")
 
 
+def input_catatan_perbaikan(driver, catatan: str):
+    """
+    Membuka menu Catatan di sidebar dan mengisi catatan ke textarea.
+    Jika di textarea sudah ada catatan sebelumnya, catatan baru akan ditambahkan
+    di baris baru (append) tanpa mereplace catatan yang sudah ada.
+    Tetap menggunakan XAPTH_INPUTAN_CATATAN dengan fallback otomatis.
+    """
+    if not catatan or not str(catatan).strip() or str(catatan).strip().lower() == "nan":
+        return
+
+    catatan = str(catatan).strip()
+    print(f"  -> Memproses input catatan: '{catatan}'...")
+
+    # 1. Klik menu Catatan di sidebar
+    try:
+        wait_and_click(driver, By.XPATH, XPATH_ADD_CATATAN, timeout=10, desc="Menu Catatan Sidebar")
+        time.sleep(1.2)
+    except Exception as e:
+        print(f"  -> Peringatan: Gagal klik menu catatan di sidebar ({XPATH_ADD_CATATAN}): {e}")
+        return
+
+    # 2. Cari textarea catatan (prioritas utama memakai XAPTH_INPUTAN_CATATAN)
+    textarea = None
+    target_xpaths = [
+        XAPTH_INPUTAN_CATATAN,
+        "//textarea[contains(@id, 'textfield')]",
+        "//textarea"
+    ]
+
+    for xpath in target_xpaths:
+        try:
+            elem = WebDriverWait(driver, 4).until(EC.presence_of_element_located((By.XPATH, xpath)))
+            if elem.is_displayed():
+                textarea = elem
+                break
+        except Exception:
+            continue
+
+    # Fallback: jika textarea belum langsung muncul, cek apakah ada tombol "Tambah Catatan" di area konten
+    if not textarea:
+        try:
+            extra_btns = driver.find_elements(By.XPATH, "//button[contains(., 'Tambah Catatan') or contains(., 'Catatan')]")
+            for b in extra_btns:
+                if b.is_displayed():
+                    print(f"  -> Mengklik tombol '{b.text.strip()}' di halaman catatan...")
+                    b.click()
+                    time.sleep(1.0)
+                    break
+            # Coba cari lagi textarea setelah tombol diklik
+            for xpath in target_xpaths:
+                try:
+                    elem = WebDriverWait(driver, 4).until(EC.presence_of_element_located((By.XPATH, xpath)))
+                    if elem.is_displayed():
+                        textarea = elem
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    if not textarea:
+        print(f"  -> Peringatan: Gagal menemukan textarea catatan ({XAPTH_INPUTAN_CATATAN}).")
+        return
+
+    # 3. Baca isi yang ada saat ini agar tidak mereplace teks yang sudah ada
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", textarea)
+        time.sleep(0.3)
+        current_val = textarea.get_attribute("value") or ""
+
+        # Jika sudah ada catatan lama di form, gabungkan dengan catatan dari Excel
+        if current_val.strip():
+            teks_lama = current_val.rstrip()
+            teks_akhir = f"{teks_lama}\n{catatan}"
+            print(f"  -> Menggabungkan catatan lama dengan catatan Excel:")
+            print(f"     [LAMA]: {teks_lama}")
+            print(f"     [BARU]: {catatan}")
+        else:
+            teks_akhir = catatan
+            print(f"  -> Catatan awal kosong, mengisi catatan Excel: '{catatan}'")
+
+        # 4. Input teks baru & trigger event Vue/Quasar agar form mendeteksi perubahan
+        driver.execute_script("""
+            var el = arguments[0];
+            var val = arguments[1];
+            el.focus();
+            el.value = val;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        """, textarea, teks_akhir)
+        time.sleep(0.3)
+
+        # Trigger ketikan fisik tambahan untuk memastikan status reaktif Vue aktif
+        try:
+            textarea.send_keys(" ")
+            textarea.send_keys(Keys.BACKSPACE)
+        except Exception:
+            pass
+        time.sleep(0.8)
+
+        print(f"  -> Berhasil menginputkan catatan tanpa mereplace teks sebelumnya: '{catatan}'")
+    except Exception as e:
+        print(f"  -> Gagal mengisi teks ke textarea catatan: {e}")
+
+
+def add_catatan_perbaikan(driver):
+    """Alias kompatibilitas untuk klik menu catatan."""
+    input_catatan_perbaikan(driver, "")
+
+
+def aktifkan_switch_anomali(driver):
+    """
+    Mengaktifkan checklist / toggle switch konfirmasi anomali (XPATH_CHECK_ANOMALI)
+    yang WAJIB dihidupkan untuk memunculkan / mengaktifkan tombol Kirim di pojok kanan atas.
+    """
+    print("  -> Memeriksa switch konfirmasi anomali (XPATH_CHECK_ANOMALI)...")
+    switch_xpaths = [
+        XPATH_CHECK_ANOMALI,
+        "//*[contains(@id, 'switch') and contains(@id, 'control')]",
+        "//button[@role='switch']",
+        "//*[@role='switch']",
+        "//*[contains(@class, 'switch') and (contains(@class, 'control') or @role='switch')]",
+        "//*[contains(translate(text(), 'ANOMALI', 'anomali'), 'anomali')]/ancestor::*[contains(@class, 'switch') or @role='switch' or contains(@class, 'toggle') or contains(@id, 'switch')]",
+        "//*[contains(translate(text(), 'ANOMALI', 'anomali'), 'anomali')]/following::*[@role='switch' or contains(@id, 'switch')][1]",
+        "//input[@type='checkbox']",
+    ]
+
+    switch_elem = None
+    for xpath in switch_xpaths:
+        try:
+            elems = driver.find_elements(By.XPATH, xpath)
+            for el in elems:
+                if el.is_displayed():
+                    switch_elem = el
+                    break
+            if switch_elem:
+                break
+        except Exception:
+            continue
+
+    # Jika switch belum terlihat, mungkin belum di menu Catatan, coba buka menu Catatan
+    if not switch_elem:
+        try:
+            print("  -> Switch anomali belum terlihat, memastikan membuka menu Catatan...")
+            wait_and_click(driver, By.XPATH, XPATH_ADD_CATATAN, timeout=5, desc="Menu Catatan Sidebar")
+            time.sleep(1.2)
+            for xpath in switch_xpaths:
+                try:
+                    elems = driver.find_elements(By.XPATH, xpath)
+                    for el in elems:
+                        if el.is_displayed():
+                            switch_elem = el
+                            break
+                    if switch_elem:
+                        break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    if not switch_elem:
+        print("  -> Info: Switch anomali tidak ditemukan (mungkin tidak ada anomali atau sudah aktif).")
+        return False
+
+    try:
+        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", switch_elem)
+        time.sleep(0.3)
+
+        aria_checked = switch_elem.get_attribute("aria-checked")
+        elem_class = (switch_elem.get_attribute("class") or "").lower()
+        is_checked = (
+            aria_checked == "true" or
+            switch_elem.is_selected() or
+            "checked" in elem_class or
+            "active" in elem_class
+        )
+
+        if is_checked:
+            print("  -> Switch anomali SUDAH HIDUP/AKTIF (tidak perlu diklik lagi).")
+            return True
+
+        print("  -> Switch anomali BELUM AKTIF. Mengaktifkan sekarang...")
+        try:
+            switch_elem.click()
+        except Exception:
+            driver.execute_script("arguments[0].click();", switch_elem)
+
+        time.sleep(0.8)
+
+        # Trigger event change/input jika form reaktif Quasar membutuhkan event
+        try:
+            driver.execute_script("""
+                var el = arguments[0];
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            """, switch_elem)
+        except Exception:
+            pass
+
+        print("  -> Berhasil mengaktifkan switch konfirmasi anomali!")
+        time.sleep(1.0)
+        return True
+    except Exception as e:
+        print(f"  -> Gagal mengaktifkan switch anomali: {e}")
+        return False
+
+
 def click_kirim(driver, url=""):
     """
     Alur Submit:
@@ -727,12 +938,20 @@ def click_kirim(driver, url=""):
         wait_and_click(driver, By.XPATH, xpath_kirim_header, timeout=6, desc="Tombol Kirim Header")
         clicked_kirim = True
     except Exception:
-        # Fallback tombol Kirim apa saja yang terlihat
+        # Coba aktifkan switch anomali jika tombol Kirim belum aktif
+        print("  -> Tombol Kirim belum bisa diklik, mencoba mengaktifkan switch anomali...")
+        aktifkan_switch_anomali(driver)
+        time.sleep(1.0)
         try:
-            wait_and_click(driver, By.XPATH, "//button[contains(., 'Kirim') and not(@disabled)]", timeout=5, desc="Fallback Kirim")
+            wait_and_click(driver, By.XPATH, xpath_kirim_header, timeout=5, desc="Tombol Kirim Header Retry")
             clicked_kirim = True
         except Exception:
-            raise AssignmentSkipException("Tombol 'Kirim' tidak ditemukan atau dinonaktifkan (Status Dokumen Reject / Terkunci / Selesai)")
+            # Fallback tombol Kirim apa saja yang terlihat
+            try:
+                wait_and_click(driver, By.XPATH, "//button[contains(., 'Kirim') and not(@disabled)]", timeout=5, desc="Fallback Kirim")
+                clicked_kirim = True
+            except Exception:
+                raise AssignmentSkipException("Tombol 'Kirim' tidak ditemukan atau dinonaktifkan (Status Dokumen Reject / Terkunci / Selesai)")
 
     # Tunggu modal Kirim muncul (validasi selesai dihitung Fasih)
     print("  -> Menunggu modal 'Kirim' muncul...")
@@ -861,7 +1080,7 @@ def click_kirim(driver, url=""):
     print("  -> Assignment berhasil disubmit paksa!")
 
 
-def process_assignment(driver, url: str, row_info: str):
+def process_assignment(driver, url: str, row_info: str, catatan: str = ""):
     """Proses lengkap untuk satu URL assignment."""
     print_banner(f"Memproses: {row_info}\nURL: {url}", char="-")
 
@@ -901,6 +1120,13 @@ def process_assignment(driver, url: str, row_info: str):
     # 7. Set Keberadaan Usaha -> 1. Ditemukan
     set_keberadaan_usaha_ditemukan(driver)
 
+    # 7b. Tambah / Isi Catatan jika kolom catatan di Excel ada isinya
+    if catatan and str(catatan).strip() and str(catatan).strip().lower() != "nan":
+        input_catatan_perbaikan(driver, str(catatan).strip())
+
+    # 7c. Hidupkan / Aktifkan Switch Anomali (Wajib sebelum submit!)
+    aktifkan_switch_anomali(driver)
+
     # 8. Klik Kirim
     click_kirim(driver, url=url)
 
@@ -910,6 +1136,8 @@ def process_assignment(driver, url: str, row_info: str):
 def main():
     parser = argparse.ArgumentParser(description="Bot Otomasi Perbaikan Data Sensus Ekonomi 2026")
     parser.add_argument("--url", type=str, default=None, help="Testing langsung ke URL assignment tertentu tanpa baca Excel")
+    parser.add_argument("--col", type=str, default="assignment_id_keluarga_usaha_ditautkan", help="Nama kolom URL assignment di Excel (default: assignment_id_keluarga_usaha_ditautkan)")
+    parser.add_argument("--catatan", type=str, default="", help="Catatan custom jika menggunakan mode --url")
     parser.add_argument("--excel", type=str, default=None, help="Path ke file Excel data")
     parser.add_argument("--test", action="store_true", help="Uji coba hanya 1 baris pertama")
     parser.add_argument("--limit", type=int, default=None, help="Batasi jumlah data yang diproses")
@@ -927,7 +1155,7 @@ def main():
         print_banner(f"MODE TEST SINGLE URL:\n{target_url}", char="*")
         driver = connect_browser()
         try:
-            process_assignment(driver, target_url, "Testing Single URL User")
+            process_assignment(driver, target_url, "Testing Single URL User", catatan=args.catatan)
             print_banner("TEST SINGLE URL BERHASIL!", char="#")
         except Exception as e:
             print_banner(f"TEST GAGAL: {e}", char="!")
@@ -972,11 +1200,17 @@ def main():
         print(f"Membaca file sumber: {excel_path}...")
         df = pd.read_excel(excel_path)
 
-    col_url = "assignment_id_usaha_bku"
+    col_url = args.col
     if col_url not in df.columns:
-        print(f"Error: Kolom '{col_url}' tidak ditemukan dalam Excel!")
-        print(f"Kolom yang ada: {list(df.columns)}")
-        sys.exit(1)
+        if "assignment_id_keluarga_usaha_ditautkan" in df.columns:
+            col_url = "assignment_id_keluarga_usaha_ditautkan"
+        elif "assignment_id_usaha_bku" in df.columns:
+            col_url = "assignment_id_usaha_bku"
+        else:
+            print(f"Error: Kolom '{col_url}' tidak ditemukan dalam Excel!")
+            print(f"Kolom yang ada: {list(df.columns)}")
+            sys.exit(1)
+    print(f"Kolom URL yang digunakan: '{col_url}'")
 
     total_rows = len(df)
     print(f"Total data di Excel: {total_rows} baris")
@@ -1053,10 +1287,18 @@ def main():
             if args.retry_failed:
                 print(f"\n>>> Memproses Data Retry #{loop_idx+1}/{len(target_indices)} (Baris Excel {idx+1}) <<<")
 
+            # Ambil catatan dari baris Excel jika ada
+            catatan_val = row.get("catatan", "")
+            catatan_text = ""
+            if pd.notna(catatan_val):
+                catatan_text = str(catatan_val).strip()
+                if catatan_text.lower() == "nan":
+                    catatan_text = ""
+
             processed_count += 1
 
             try:
-                process_assignment(driver, url, row_desc)
+                process_assignment(driver, url, row_desc, catatan=catatan_text)
                 success_count += 1
 
                 # Cek jika baris ini sebelumnya sempat error dan memiliki screenshot
